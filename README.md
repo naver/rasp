@@ -114,7 +114,8 @@ This codebase has been built upon the works [WILSON](https://github.com/fcdl94/W
 
 ### Reference
 
-**On the Road to Online Adaptation for Semantic Image Segmentation** 
+**RaSP: Relation-aware Semantic Prior for Weakly Supervised Incremental Segmentation** 
+
 Subhankar Roy, Riccardo Volpi, Gabriela Csurka and Diane Larlus 
 ```
     @InProceedings{Roy_2023_CoLLAs,
