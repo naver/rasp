@@ -1,0 +1,114 @@
+RaSP, Copyright (C) 2023 NAVER Corp., is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 license.
+
+A summary of the CC BY-NC-SA 4.0 license is located here:
+	https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+The CC BY-NC-SA 4.0 license is located here:
+	https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+
+**************************************************************************
+SEE NOTICES BELOW CONCERNING SOFTWARE FILES:
+**************************************************************************
+
+(A) This software:
+	WILSON/blob/master/dataset/transform.py
+	WILSON/blob/master/dataset/utils.py
+	WILSON/blob/master/dataset/voc.py
+	WILSON/blob/master/metrics/stream_metrics.py
+	WILSON/tree/master/models/resnet.py
+	WILSON/tree/master/models/util.py
+	WILSON/blob/master/modules/classifiers.py
+	WILSON/blob/master/modules/custom_bn.py
+	WILSON/blob/master/utils/logger.py
+	WILSON/blob/master/utils/loss.py
+	WILSON/blob/master/utils/regularizer.py
+	WILSON/blob/master/utils/scheduler.py
+	WILSON/blob/master/utils/utils.py
+	WILSON/blob/master/utils/wss_loss.py
+	WILSON/blob/master/argparser.py
+	WILSON/blob/master/run.py
+	WILSON/blob/master/segmentation_module.py
+	WILSON/blob/master/tasks.py
+	WILSON/blob/master/train.py
+that is available here:
+	https://github.com/fcdl94/WILSON
+under these conditions (MIT):
+	https://github.com/fcdl94/WILSON/blob/master/LICENSE
+is being redistributed in a modified under the same terms and conditions here:
+	rasp/dataset/transform.py
+	rasp/dataset/utils.py
+	rasp/dataset/voc.py
+	rasp/metrics/stream_metrics.py
+	rasp/metrics/stream_metrics_fss.py
+	rasp/models/resnet.py
+	rasp/models/util.py
+	rasp/modules/classifiers.py
+	rasp/modules/custom_bn.py
+	rasp/utils/logger.py
+	rasp/utils/loss.py
+	rasp/utils/regularizer.py
+	rasp/utils/scheduler.py
+	rasp/utils/utils.py
+	rasp/utils/wss_loss.py
+	rasp/wss/modules.py
+	rasp/wss/single_stage.py
+	rasp/argparser.py
+	rasp/run.py
+	rasp/segmentation_module.py
+	rasp/tasks.py
+	rasp/train.py
+
+
+(B) Software available here:
+	https://github.com/facebookresearch/detectron2/blob/main/detectron2/engine/launch.py
+under these conditions (Apache License 2.0):
+	https://github.com/facebookresearch/detectron2/blob/main/LICENSE
+is being redistributed in a modified under the same terms and conditions here:
+	rasp/utils/utils.py (function “_find_free_port”)
+
+
+(C) Software available here:
+	https://github.com/open-mmlab/mmcv/blob/a3a078eefb703cc22412af0d133e9c378cb3f56f/mmcv/runner/dist_utils.py
+under these conditions (Apache License 2.0):
+	https://github.com/open-mmlab/mmcv/blob/main/LICENSE
+is being redistributed in a modified under the same terms and conditions here:
+	rasp/utils/utils.py (function “_init_dist_slurm”)
+
+
+(D) Software available here:
+	https://github.com/jfzhang95/pytorch-deeplab-xception/blob/master/modeling/aspp.py
+under these conditions (MIT):
+	https://github.com/jfzhang95/pytorch-deeplab-xception/blob/master/LICENSE
+is being redistributed in a modified under the same terms and conditions here:
+	rasp/wss/modules.py
+
+
+(E) This software:
+	mapillary/inplace_abn/blob/main/scripts/models/resnet.py
+	mapillary/inplace_abn/blob/main/scripts/models/util.py
+	mapillary/inplace_abn/blob/main/scripts/models/wide_resnet.py
+	mapillary/inplace_abn/blob/main/scripts/modules/deeplab.py
+	mapillary/inplace_abn/blob/main/scripts/modules/misc.py
+	mapillary/inplace_abn/blob/main/scripts/modules/residual.py
+that is available here:
+	https://github.com/mapillary/inplace_abn
+under these conditions (BSD 3-Clause):
+	https://github.com/mapillary/inplace_abn/blob/main/LICENSE
+is being redistributed in a modified under the same terms and conditions here:
+	rasp/models/resnet.py
+	rasp/models/util.py
+	rasp/models/wide_resnet.py
+	rasp/modules/deeplab.py
+	rasp/modules/misc.py
+	rasp/modules/residual.py
+
+(F) Software available here:
+	https://github.com/fcdl94/MiB/blob/master/dataset/transform.py
+under these conditions (MIT):
+	https://github.com/fcdl94/MiB/blob/master/LICENSE
+is being redistributed in a modified under the same terms and conditions here:
+	rasp/dataset/transform.py
+
+
+

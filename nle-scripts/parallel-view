@@ -1,0 +1,49 @@
+#! /usr/bin/bash
+
+[[ "$1" != "grep" ]]; must_err=$?
+[[ "$1" != "err" ]]; must_err=$?
+
+files=`python -c "import os
+odir = '/tmp-network/user/$USER/slurm'
+all_files = os.listdir(odir)
+def number(i):
+    try: return '%09.9f' % float(i)
+    except: return i
+all_files = sorted(all_files, key=lambda f: tuple([number(p) for p in f.split('.')]))
+ref = os.path.getmtime(odir)
+files=[]
+for f_ in all_files:
+    f = os.path.join(odir,f_)
+    if not f.endswith('.output'): continue
+    date = os.path.getmtime(f)
+    if '$1' and '$1'!='grep':
+        if f_.startswith('$1'): files.append(f)
+        continue
+    if date < ref: continue
+    e = f[:-6]+'errput'
+    if $must_err:# or os.path.getmtime(e) > date and ('Error' in open(e).read().splitlines()[-1]): 
+        files.append(e)
+    else:
+        files.append(f)
+print(' '.join(files))"`
+
+if [[ "$1" == "files" ]]; then
+    echo $files
+    exit
+
+elif [[ "$1" == "err" ]]; then
+    multitail $files
+
+elif [[ "$1" == "grep" ]]; then
+    key=$2
+    tail=$3
+    [[ "$t" == "" ]] && t=5
+    for f in $files; do 
+        echo $f;
+        cat $f | grep "$key" | tail -n $tail;
+    done
+    exit
+
+else
+    multitail $files
+fi

@@ -1,0 +1,466 @@
+#! /usr/bin/env python
+from __future__ import print_function
+import os, sys, time, pdb, shutil
+from subprocess import check_output
+
+all_machines = {'noctis-6'}
+all_queues =  ('cpu','cpu-be','gpu-mono','gpu-multi','gpu-be','gpu-l2','gpu-debug','matlab')
+
+
+def usage():
+  print("""This program dispatches a list of jobs to several machines. 
+Jobs are executed remotely, then their output is printed here. More details below.
+
+Usage:
+    echo job_list_cmds | parallel machine1[*N1] [machine2[*N2] ...] [options]
+
+    'machine' can be:
+        'me'            this local machine
+        <queue>*N       N jobs on this <queue>
+        <queue>:C*N     N jobs with C cpus on this <queue>
+        where <queue> in {%s}
+  
+ -bundle <nb>     bundle <nb> jobs together
+
+ -log <dir>       write logs to a directory
+ -mem <GB>        contraint on memory usage 
+ -shuffle         randomly shuffle the list of jobs beforehand
+ -killall         kill every process owned by current user on specified machines
+ -maxerr <n=5>    number of job errors tolerated per machine
+ -v               increase verbosity
+ -fake            just print the jobs it is about to launch, but does nothing
+ -enroot <name>   run the commands under an ENROOT environment
+
+  SLURM options:
+   -name <name>     give a name to the jobs (on the cluster)
+   -wt <duration>   walltime in hours (max duration)
+   -key "val"       any slurm constraints "-key val"
+                    typically -constraint "'gpu_16g|gpu_22g|gpu_32g'"
+
+How does it work ?
+  - Jobs are input as text (1 line = 1 job)
+  - jobs are grouped in bundles (parameter -bundle)
+  - each bundle is sent to a node and executed there
+  
+Examples: 
+  cat my_jobs.txt | parallel me*10 -bundle 1
+  for((i=0; i<5; i++)); do echo "echo $i"; done | parallel me 1core*2 -v
+  """ % (', '.join(all_queues)))
+  sys.exit()
+
+
+args = sys.argv[1:]
+
+
+from threading import Lock, Thread, Semaphore
+#from queue import Queue, Empty
+from multiprocessing import Queue
+
+def hostname():
+  try:
+    return os.environ['HOSTNAME'].split('.')[0]
+  except KeyError:
+    return 'unknown'
+
+def add_unique(lis,a,nb=1):
+  if a not in lis:  
+    for i in range(nb): # can add him several times
+      lis.append(a)
+
+def split_nb_node(arg):
+  s = arg.split('*')
+  if len(s)==1:
+    return arg, 1
+  else:
+    assert len(s)==2, 'error: could not understand what you mean here: '+arg
+    if s[0].isdigit():
+      return s[1], int(s[0])
+    elif s[1].isdigit():
+      return s[0], int(s[1])
+    else:
+      assert False, 'error: could not understand what you mean here: '+arg
+
+def find_prefix( list_cmd ):
+  prefix = os.path.commonprefix(list_cmd)
+  l = len(prefix)
+  return prefix, [cmd[l:] for cmd in list_cmd]
+
+def escapequote(str,c='"'):  # make sure that it doesnt contain ' sign
+  # make sure that bash commands $(...) or `...` are not executed
+  if c=="'":
+    str = str.replace("'","'\"'\"'")
+  else:
+    str = str.replace('\\','\\\\').replace("%c"%c,"\\%c"%c)
+  str = str.replace('$(','\\$(').replace('`','\\`')
+  return str
+
+def exec_cmd( machine, cmd ):
+  machine = machine.split(':')[0] # get rid of useless tags
+  if hostname()!=machine:
+      cmd = 'ssh -oBatchMode=yes -x %s "%s"' % (machine, escapequote(cmd))
+  if verbose>2: printl(cmd)
+  MAX_CMD_SIZE = 2**17  # ssh command line limit 
+  if len(cmd) >= MAX_CMD_SIZE:
+    error = "error: ssh command is too long (%d > limit %d)\nSolution: please reduce bundle size." % (len(cmd),MAX_CMD_SIZE)
+    print(error, file=sys.stderr)
+    return error
+  elif fake:
+    if verbose: print(cmd)
+    return '0'
+  else:
+    return check_output(cmd, shell=True).decode('utf-8')
+
+class SlurmCheck:
+  def __init__(self, user=None):
+    self.server = hostname()
+    self.user = user or os.environ['USER']
+    self.last_time = 0.0
+    self.current_jobs = set() # all jobs launched by $USER
+    self.my_jobs = set()  # jobs launched by this program
+    self.mutex = Lock() # protect current_jobs
+  
+  def check_current_jobs(self, min_interval=4.0):
+    self.mutex.acquire()
+    update = False
+    if time.time() - self.last_time > min_interval:
+      try:
+        res = exec_cmd(self.server, 'squeue -u '+self.user)
+        job_ids = [l.split()[0] for l in res.splitlines()[1:]]
+        self.current_jobs = {int(num) for num in job_ids if num.isdigit()}
+        update = True
+        self.last_time = time.time()
+      except:
+        pass
+    cached_jobs = set(self.current_jobs)
+    self.mutex.release()
+    #if verbose and update:  printl("updated current job list on %s: "%self.server+' '.join([str(n) for n in cached_jobs]))
+    return cached_jobs
+  
+  def wait_slurm_job(self, num_job):
+    #if verbose: printl('waiting for SLURM job %d ...'%num_job)
+    while num_job in self.check_current_jobs():
+      time.sleep(0.1)
+    #if verbose: printl('waiting for SLURM job %d ...'%num_job)
+  
+  def launch_job(self, cmd ):
+    self.mutex.acquire()
+    # write command to tmp
+    num = exec_cmd(self.server,cmd)
+    num_job = int(num.split()[-1])
+    self.my_jobs.add(num_job)
+    self.current_jobs.add(num_job)
+    my_jobs = set(self.my_jobs) # copy
+    cached_jobs = set(self.current_jobs) # copy
+    self.mutex.release()
+    if verbose: printl('current jobs on %s: '%self.server+' '.join([str(n) for n in (cached_jobs & my_jobs)]))
+    return num_job
+
+
+# global object for requesting SLURM
+slurm = SlurmCheck()
+
+free_machines = Queue()
+badguy = dict()
+
+print_mutex = Lock()
+def printl( str ):
+  print_mutex.acquire()
+  print(str)
+  print_mutex.release()
+
+
+def jobheader(machine,list_jobs):
+  return '\n'.join(['[%s]$ %s'%(machine,job) for job in list_jobs])
+
+
+   # -------------------------------------------#
+   #  big function used to launch bundle of jobs  #
+   # -------------------------------------------#
+
+def launch_job( num_th, machine, list_cmd ):
+  bundle_size = len(list_cmd)
+  res = jobheader(machine,list_cmd)
+  
+  if machine[0]=='slurm':
+    cmd = '; '.join(list_cmd)
+    
+    # launch on the cluster
+    constraints = node_constraints
+    if machine[1]=='cores':
+      queue, ncpus = machine[2:4]
+      queue = queue.replace('gpu-l2','l2')
+      if 'gpu' in machine[2] and ncpus>0:  constraints += ' --gres=gpu:1'
+      ncpus = abs(ncpus)
+      constraints += ' -p %s --nodes=1 --cpus-per-task=%d' % (queue, ncpus)
+      if queue == 'gpu-be': constraints += ' --requeue'
+    else:
+      assert False, 'error: unknown SLURM mode '+str(machine)
+    if machine[2] == 'gpu-l2': constraints += ' --account l2'
+    if mem_limit: 
+        kbytes = mem_limit if mem_limit>0 else ncpus*2*1024**2 # 2 GIGAS per cpu by default
+        constraints += ' --mem %dK' % kbytes
+    constraints += ' --time=%02d:%02d:00' % (int(walltime_hours), int(0.5+60*(walltime_hours%1)))
+    
+    outpath = '/tmp-network/user/%s/slurm/%s%d.%d' % (os.getlogin(), name and name+'.' or '', os.getpid(), num_th)
+    output = outpath + '.output'
+    errput = outpath + '.errput'
+    os.system('mkdir -p %s; rm -f %s %s'%(os.path.split(outpath)[0],output,errput))  # remove existing files
+    cmd = 'sbatch --job-name "%s%d" %s -o %s -e %s --wrap "%s"' % (
+                    name or "job", num_th, constraints, output, errput, escapequote(cmd))
+    
+    jobnum = slurm.launch_job( cmd )
+    actual_machine = machine+(jobnum,)
+    res = jobheader(actual_machine,list_cmd)
+    
+    # wait until this job is finished
+    if jobnum: slurm.wait_slurm_job( jobnum )
+    err = []
+    wait = 0
+    while jobnum and wait<60:  # 1 min timeout
+       try:
+          os.system('ls %s >/dev/null 2>/dev/null' % os.path.split(output)[0]) # can make the files appear
+          content =  open(output).read()
+          err = open(errput).read().splitlines()
+          while err and err[0].startswith('-bash'): err=err[1:]
+          err = [line for line in err if 0<len(line)<=4 or (line and line[3]!='%' and line[4]!='!' and line.count('|') < 2)]
+          res += '\n'+content + '\n'.join(err)
+          if logging: # rename files with jobnum
+            shutil.move(output, os.path.join(logging, os.path.splitext(os.path.split(output)[1])[0] + '.%d.out'%jobnum))
+            shutil.move(errput, os.path.join(logging, os.path.splitext(os.path.split(errput)[1])[0] + '.%d.err'%jobnum))
+          else:
+            os.remove(output)
+            os.remove(errput)
+          break
+       except IOError:
+          time.sleep(1) # wait until the files 'appear'
+          wait += 1
+          if wait%10==0 and wait>=60-50*verbose: 
+            if not os.path.isfile(output):
+              printl('waiting file %s since %ds...' % (output, wait))
+            if not os.path.isfile(errput):
+              printl('waiting file %s since %ds...' % (errput, wait))
+      
+    iserror = err and ('Error' in err[-1])
+  else:
+    cmd = env + '; '.join(list_cmd)
+    try:
+      res += '\n'+exec_cmd(machine, cmd)
+    except Exception as e:
+        if watchbadguys:
+          badguy[machine] += 1
+        if verbose:
+          res += '\n[%s] Error when executing %s' %(machine, e)
+        else:
+          res += '\n[%s] Error, exiting.' % machine
+  
+  printl(res)
+  free_machines.put(machine)  # now free !
+  if resubmit and iserror: assert False
+
+
+
+if __name__=='__main__':
+  cmd = ''
+  machines = []
+  name = ''     # name of the jobs, for slurm
+  ncpus = 1     # number of cpu per bundle
+  bundle = -1    # bundle size (nb of jobs)
+  
+  shuffle = False   # shuffle jobs beforehand
+  watchbadguys = 5
+  env = ''
+  node_constraints = ''
+  walltime_hours = 24*4
+  mem_limit = -1
+  killall = "kill -s SIGKILL `ps ux | grep '%s' | tr -s ' ' | cut -d ' ' -f 2`"
+  fake = False
+  verbose = 0
+  logging = False
+  resubmit = False # resubmit a job when it fails
+  gpu_map = None
+  enroot = None
+  
+  dispatch_all = False  # same job is run on multiple nodes
+  
+  args = sys.argv[1:]
+  while args:
+    a = _a = args.pop(0)
+    if a.startswith('--'): a = a[1:]
+    a, nb = split_nb_node(a)
+    if a in ('-h','--h','--help'):usage()
+    elif a=='-fake':              fake=True
+    elif a=='-n':                 ncpus = int(args.pop(0))
+    elif a=='-bundle':            bundle = int(args.pop(0))
+    elif a=='-shuffle':           shuffle=True
+    elif a=='-maxerr':            watchbadguys = int(args.pop(0))
+    elif a=='-nice':              nice = int(args.pop(0))
+    elif a=='-mem':               mem_limit = int(args.pop(0))
+    elif a=='-cmd':               cmd = args.pop(0)
+    elif a=='-dispatch_all':      cmd=args.pop(0); dispatch_all = 1
+    elif a=='-killall':           cmd=killall%(args.pop(0)); dispatch_all = 1
+    elif a=='-env':               env += args.pop(0)+'; '
+    elif a=='-name':              name = args.pop(0)
+    elif a=='-wt':                walltime_hours = float(args.pop(0))
+    elif a=='-log':               logging = args.pop(0)
+    elif a=='-resubmit':          resubmit = True
+    elif a=='-gpu-map':           gpu_map = list(map(int, args.pop(0).split()))
+    elif a=='-gpumem':            gpumem=int(args.pop(0)); node_constraints += " --constraint '%s'" % ('|'.join("gpu_%dg"%m for m in [16,22,32] if m>=gpumem))
+    elif a=='-exclude':           node_constraints += " --exclude '%s'" % args.pop(0)
+    elif a=='-slurm':             node_constraints += " "+args.pop(0)
+    elif a=='-enroot':            node_constraints += " --constraint 'enroot'"
+    # machines
+    elif a=='me':                 machines += [hostname()]*nb
+    elif a=='-v':                 verbose += 1
+    elif a in all_machines:       machines += [a]*nb
+    elif a.startswith(all_queues) or nb>1 or ':' in a:
+      queue = a.split(':')
+      queue, ncores = (queue[0], int(queue[1])) if len(queue) >= 2 else (queue[0], 8 if 'gpu' in queue[0] else 1)
+      machines += [('slurm','cores',queue,ncores)] * nb
+    else:
+      raise RuntimeError("Unrecognized argument '%s'.\nDid you mean queue %s?" % (a, all_queues))
+  
+  assert len(machines) > 0, "you must specify at least one machine"
+  if not cmd:
+    jobs = sys.stdin.read().splitlines()
+  else:
+    jobs = [cmd]
+
+  #if enroot:
+  #  for i in range(len(jobs)):
+  #    jobs[i] = 'enroot start --mount /home:/home --mount /nfs:/nfs --mount /gfs:/gfs --mount /tmp-network:/tmp-network --mount /local:/local %s %s' % (enroot, jobs[i])
+  
+  post_cmd = ''
+  if dispatch_all>0:
+    if cmd == killall:
+      # remove myself in the machines, otherwise it's stupid
+      while hostname() in machines:
+        post_cmd = cmd
+        machines.remove(hostname())
+    assert len(jobs)==1, 'dispatch_all must dispatch a *single* job to many machines'
+    jobs *= len(machines) # make as many as there are machines
+    bundle = ncpus = 1
+  elif bundle<=-1:  # smart heuristic
+    if ncpus: 
+      bundle = ncpus # one job per cpu in a bundle
+    else:
+      bundle = min(128, 1+(len(jobs)-1)/(4*len(machines)))
+  elif bundle==0: # just send one bundle per machine 
+    bundle = min(200, 1+(len(jobs)-1)/len(machines))
+  if logging: os.system('mkdir -p "%s"' % logging)
+  
+  # add current environment variables
+  if env == 'auto':
+    env  = 'export PATH="%s"; ' % os.environ.get('PATH','')
+    env += 'export LD_LIBRARY_PATH="%s"; ' % os.environ.get('LD_LIBRARY_PATH','')
+    env += 'export PYTHONPATH="%s"; ' % os.environ.get('PYTHONPATH','')
+  if mem_limit>0:
+    mem_limit *= 1024**2  # GB => KB
+    env += "ulimit -Sm %d -Sv %d; " % (mem_limit, mem_limit)
+  env += 'cd "%s"; ' % os.getcwd()
+  
+  if shuffle:
+    from random import randrange
+    jobs = [jobs.pop(randrange(len(jobs))) for i in range(len(jobs))]
+  
+  print('launching %d bundles of %d jobs (total: %d jobs) on %d machines, %s process/machine' % (
+                (len(jobs)+bundle-1)/bundle, bundle, len(jobs), len(machines), ncpus or 'all'))
+  assert ncpus==0 or bundle>=ncpus, 'error: sending less jobs to each machine than ncpus (%d<%d)'%(bundle,ncpus)
+  if len(machines) > (len(jobs)+bundle-1)/bundle:  
+    print("[WARNING] there are more machines (%d) than job bundles (%d)" % (
+                len(machines), (len(jobs)+bundle-1)/bundle), file=sys.stderr)
+  
+  if verbose>1:
+    print('Selected machines = '+', '.join([str(m) for m in machines]))
+  elif False: #fake:
+    print('[FAKE MODE] Showing the %d jobs:' % len(jobs))
+    print('\n'.join(jobs))
+    print("Total: %d jobs" % len(jobs))
+    sys.exit()
+  
+  if any([(type(m) is tuple) for m in machines]):
+    exec_cmd(hostname(), 'which sbatch')    # check slurm
+  
+  for m in machines:  
+    badguy[m] = 0 # initially everyone is ok
+    free_machines.put(m)
+  
+  numth = 0
+  while jobs:
+    # wait for a free machine...
+    m = free_machines.get()
+    time.sleep(0.1)  # wait a bit
+    
+    if watchbadguys and badguy[m]>=watchbadguys:  # do nothing if this machine is no good
+      print('[WARNING] removing machine "%s" from pool, too many errors (%d)' % (
+            m, watchbadguys), file=sys.stderr)
+      machines.remove(m) # remove him from the pool
+      assert len(machines), 'All machines have been removed from pool!'
+      continue  
+    
+    # select next job
+    job = jobs[:bundle]  # debundle bundle
+    jobs = jobs[bundle:]
+    
+    if gpu_map: # remap gpu
+        job2 = []
+        for j in job:
+            gpu = gpu_map.pop(0)
+            gpu_map.append(gpu) # circular
+            job2.append( j.replace("gpu 0","gpu %d"%gpu) )
+        job = job2
+    
+    # launch it
+    Thread(target=launch_job, args=(numth,m,job)).start()
+    numth += 1
+  
+  # wait till everyone finished
+  if verbose>1: printl('waiting for jobs to be finished...')
+  while machines:
+    try:
+      m = free_machines.get(timeout=5)
+      machines.pop(machines.index(m))
+      if machines and verbose>1: printl('waiting for '+' '.join([str(m) for m in machines]))
+    except:
+      pass
+  
+  if post_cmd:
+    exec_cmd( hostname(), post_cmd )
+
+"""
+test code:
+ 
+for((i=0; i<5; i++)); do echo "echo \"$i\""; done | ~/parallel me 1core*2 -n test_parallel -v
+for((i=0; i<5; i++)); do echo "python -c 'sum(range(($i==0)*2**26));print $i'"; done | ~/parallel me regan -bundle 1 -v
+
+"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
