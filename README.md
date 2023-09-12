@@ -1,4 +1,4 @@
-## Relation-aware Semantic Prior for Weakly Supervised Class-incremental Segmentation
+# RaSP: Relation-aware Semantic Prior for Weakly Supervised Incremental Segmentation [[Paper](https://arxiv.org/abs/2305.19879)]
 
 ## Versions:
     - ws_ciss-v1.0
@@ -110,3 +110,18 @@ Please remember to change the path to the datasets as per your workspace.
 
 ### Acknowledgements
 This codebase has been built upon the works [WILSON](https://github.com/fcdl94/WILSON) and [MiB](https://github.com/fcdl94/MiB)
+
+
+### Reference
+
+**On the Road to Online Adaptation for Semantic Image Segmentation** 
+Subhankar Roy, Riccardo Volpi, Gabriela Csurka and Diane Larlus 
+```
+    @InProceedings{Roy_2023_CoLLAs,
+    author = {Subhankar, Roy and Volpi, Riccardo and Csurka, Gabriela and Larlus, Diane},
+    title = {RaSP: Relation-aware Semantic Prior for Weakly Supervised Incremental Segmentation},
+    booktitle = {The 2nd Conference on Lifelong Learning Agents (CoLLAs)},
+    month = {August},
+    year = {2023}
+    }
+```
